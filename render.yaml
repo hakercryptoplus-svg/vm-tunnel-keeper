@@ -5,12 +5,3 @@ services:
     plan: free
     buildCommand: npm install
     startCommand: node server.js
-    envVars:
-      - key: REPLIT_SSH_HOST
-        value: e7312bde-2503-4ee5-847c-4a52e65a88c1-00-19z61njhlnfbf.janeway.replit.dev
-      - key: REPLIT_SSH_USER
-        value: e7312bde-2503-4ee5-847c-4a52e65a88c1
-      - key: SSH_PRIVATE_KEY
-        sync: false
-      - key: UBUNTU_SSH_PASSWORD
-        sync: false
