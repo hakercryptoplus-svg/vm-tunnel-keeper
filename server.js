@@ -4,6 +4,7 @@ const cron = require('node-cron');
 const { WebSocketServer } = require('ws');
 const http = require('http');
 const path = require('path');
+const net = require('net');
 
 const app = express();
 const server = http.createServer(app);
@@ -11,7 +12,7 @@ const wss = new WebSocketServer({ server });
 
 const PORT = process.env.PORT || 3000;
 
-// ─── State ──────────────────────────────────────────────
+// ─── State ────────────────────────────────────────────────
 const state = {
   replit: {
     label: 'Replit NixOS',
@@ -34,36 +35,21 @@ const state = {
     shell: null,
   },
   logs: [],
+  startTime: Date.now(),
 };
 
-// ─── Logging ────────────────────────────────────────────
+// ─── Logging ──────────────────────────────────────────────
 function log(source, level, msg) {
-  const entry = {
-    time: new Date().toISOString(),
-    source,
-    level,
-    msg,
-  };
+  const entry = { time: new Date().toISOString(), source, level, msg };
   state.logs.unshift(entry);
   if (state.logs.length > 500) state.logs.pop();
   console.log(`[${entry.time}] [${source}] [${level}] ${msg}`);
   broadcast({ type: 'log', entry });
 }
 
-// ─── WebSocket broadcast ─────────────────────────────────
 function broadcast(data) {
   const str = JSON.stringify(data);
-  wss.clients.forEach((client) => {
-    if (client.readyState === 1) client.send(str);
-  });
-}
-
-function broadcastState() {
-  broadcast({
-    type: 'state',
-    replit: sanitize(state.replit),
-    ubuntu: sanitize(state.ubuntu),
-  });
+  wss.clients.forEach((c) => { if (c.readyState === 1) c.send(str); });
 }
 
 function sanitize(s) {
@@ -77,39 +63,63 @@ function sanitize(s) {
   };
 }
 
-// ─── SSH Config ──────────────────────────────────────────
+function broadcastState() {
+  broadcast({ type: 'state', replit: sanitize(state.replit), ubuntu: sanitize(state.ubuntu) });
+}
+
+// ─── SSH Config ───────────────────────────────────────────
 const REPLIT_HOST = (process.env.REPLIT_SSH_HOST || '').replace(/^-/, '');
 const REPLIT_USER = process.env.REPLIT_SSH_USER || '';
-const SSH_PRIVATE_KEY = (process.env.SSH_PRIVATE_KEY || '').replace(/\\n/g, '\n');
 const UBUNTU_PASS = process.env.UBUNTU_SSH_PASSWORD || '';
 
-// ─── Keep-alive ping every 30s ───────────────────────────
+function parsePrivateKey(raw) {
+  if (!raw) return '';
+  let key = raw.replace(/\\n/g, '\n');
+  if (!key.includes('\n') || key.split('\n').length < 3) {
+    const headerMatch = key.match(/(-----BEGIN [^-]+ KEY-----)/);
+    const footerMatch = key.match(/(-----END [^-]+ KEY-----)/);
+    if (headerMatch && footerMatch) {
+      const header = headerMatch[1];
+      const footer = footerMatch[1];
+      let body = key.replace(header, '').replace(footer, '').trim().replace(/\s+/g, '');
+      const lines = body.match(/.{1,70}/g) || [];
+      key = `${header}\n${lines.join('\n')}\n${footer}\n`;
+    }
+  }
+  return key;
+}
+
+const SSH_PRIVATE_KEY = parsePrivateKey(process.env.SSH_PRIVATE_KEY);
+
+// ─── Keepalive ────────────────────────────────────────────
 function sendKeepAlive(key) {
   const s = state[key];
   if (s.shell && s.status === 'connected') {
     try {
-      s.shell.write('echo keepalive_ping_$(date +%s)\n');
+      s.shell.write('echo __keepalive_$(date +%s)__\n');
     } catch (e) {
-      log(key, 'WARN', `Keepalive write failed: ${e.message}`);
+      log(key, 'WARN', `Keepalive failed: ${e.message}`);
     }
   }
 }
 
-// ─── Connect to Replit ───────────────────────────────────
-function connectReplit() {
-  const key = 'replit';
-  const s = state[key];
+// ─── Reconnect scheduler ──────────────────────────────────
+const reconnectTimers = {};
+function scheduleReconnect(key, fn, delay = 15000) {
+  if (reconnectTimers[key]) clearTimeout(reconnectTimers[key]);
+  log(key, 'INFO', `Reconnecting in ${delay / 1000}s...`);
+  reconnectTimers[key] = setTimeout(fn, delay);
+}
 
-  if (s.conn) {
-    try { s.conn.end(); } catch (_) {}
-    s.conn = null;
-    s.shell = null;
-  }
+// ─── Connect to Replit ────────────────────────────────────
+function connectReplit() {
+  const s = state.replit;
+  if (s.conn) { try { s.conn.end(); } catch (_) {} s.conn = null; s.shell = null; }
 
   if (!REPLIT_HOST || !REPLIT_USER || !SSH_PRIVATE_KEY) {
     s.status = 'error';
-    s.error = 'Missing SSH credentials (REPLIT_SSH_HOST / REPLIT_SSH_USER / SSH_PRIVATE_KEY)';
-    log(key, 'ERROR', s.error);
+    s.error = 'Missing REPLIT_SSH_HOST / REPLIT_SSH_USER / SSH_PRIVATE_KEY';
+    log('replit', 'ERROR', s.error);
     broadcastState();
     return;
   }
@@ -117,68 +127,65 @@ function connectReplit() {
   s.status = 'connecting';
   s.error = null;
   broadcastState();
-  log(key, 'INFO', `Connecting to ${REPLIT_HOST} as ${REPLIT_USER}...`);
+  log('replit', 'INFO', `Connecting to ${REPLIT_HOST} as ${REPLIT_USER}...`);
 
   const conn = new Client();
   s.conn = conn;
 
   conn.on('ready', () => {
-    log(key, 'INFO', 'SSH handshake OK — opening shell...');
+    log('replit', 'INFO', 'SSH ready — opening shell...');
     conn.shell({ term: 'xterm' }, (err, stream) => {
       if (err) {
-        s.status = 'error';
-        s.error = err.message;
-        log(key, 'ERROR', `Shell open failed: ${err.message}`);
+        s.status = 'error'; s.error = err.message;
         broadcastState();
-        scheduleReconnect(key, connectReplit);
+        log('replit', 'ERROR', `Shell failed: ${err.message}`);
+        scheduleReconnect('replit', connectReplit);
         return;
       }
-
       s.shell = stream;
       s.status = 'connected';
       s.lastSeen = new Date().toISOString();
       s.reconnects++;
       broadcastState();
-      log(key, 'INFO', 'Shell open — connection established ✓');
+      log('replit', 'INFO', '✅ Replit connected and shell open');
 
       stream.on('data', (data) => {
-        const txt = data.toString().trim();
-        if (txt) {
+        const txt = data.toString();
+        if (txt.trim()) {
           s.lastOutput = txt.slice(-500);
           s.lastSeen = new Date().toISOString();
-          broadcast({ type: 'output', source: key, data: txt });
+          if (!txt.includes('__keepalive_')) {
+            broadcast({ type: 'output', source: 'replit', data: txt });
+          }
         }
       });
 
-      stream.stderr.on('data', (data) => {
-        log(key, 'WARN', `stderr: ${data.toString().trim()}`);
-      });
+      stream.stderr.on('data', (d) => log('replit', 'WARN', `stderr: ${d.toString().trim()}`));
 
       stream.on('close', () => {
-        s.status = 'disconnected';
-        s.shell = null;
+        s.status = 'disconnected'; s.shell = null; s.conn = null;
         broadcastState();
-        log(key, 'WARN', 'Shell closed — scheduling reconnect...');
-        scheduleReconnect(key, connectReplit);
+        log('replit', 'WARN', 'Shell closed — reconnecting...');
+        scheduleReconnect('replit', connectReplit);
       });
+
+      // After Replit is ready, connect Ubuntu
+      setTimeout(() => connectUbuntu(), 3000);
     });
   });
 
   conn.on('error', (err) => {
-    s.status = 'error';
-    s.error = err.message;
-    s.shell = null;
+    s.status = 'error'; s.error = err.message; s.shell = null;
     broadcastState();
-    log(key, 'ERROR', `Connection error: ${err.message}`);
-    scheduleReconnect(key, connectReplit);
+    log('replit', 'ERROR', `Connection error: ${err.message}`);
+    scheduleReconnect('replit', connectReplit);
   });
 
   conn.on('end', () => {
     if (s.status === 'connected') {
-      s.status = 'disconnected';
-      s.shell = null;
+      s.status = 'disconnected'; s.shell = null;
       broadcastState();
-      log(key, 'WARN', 'Connection ended');
+      log('replit', 'WARN', 'Connection ended');
     }
   });
 
@@ -193,54 +200,51 @@ function connectReplit() {
   });
 }
 
-// ─── Connect to Ubuntu VM (through Replit jump) ──────────
+// ─── Connect to Ubuntu VM via forwardOut ──────────────────
 function connectUbuntu() {
-  const key = 'ubuntu';
-  const s = state[key];
+  const s = state.ubuntu;
   const r = state.replit;
+
+  if (s.conn) { try { s.conn.end(); } catch (_) {} s.conn = null; s.shell = null; }
 
   if (r.status !== 'connected' || !r.conn) {
     s.status = 'waiting';
-    s.error = 'Waiting for Replit connection first...';
+    s.error = 'Waiting for Replit connection...';
     broadcastState();
-    log(key, 'INFO', 'Waiting for Replit tunnel before connecting Ubuntu...');
-    setTimeout(() => connectUbuntu(), 10000);
+    log('ubuntu', 'INFO', 'Replit not ready yet, will retry in 10s...');
+    scheduleReconnect('ubuntu', connectUbuntu, 10000);
     return;
-  }
-
-  if (s.conn) {
-    try { s.conn.end(); } catch (_) {}
-    s.conn = null;
-    s.shell = null;
   }
 
   s.status = 'connecting';
   s.error = null;
   broadcastState();
-  log(key, 'INFO', 'Connecting to Ubuntu VM via Replit jump host...');
+  log('ubuntu', 'INFO', 'Opening port-forward tunnel to Ubuntu VM (localhost:2222)...');
 
+  // Use forwardOut to create a real TCP tunnel through the SSH connection
+  // This is the correct way - same as "ssh -L local:remote" but done programmatically
   r.conn.forwardOut('127.0.0.1', 0, '127.0.0.1', 2222, (err, stream) => {
     if (err) {
       s.status = 'error';
       s.error = `Port forward failed: ${err.message}`;
       broadcastState();
-      log(key, 'ERROR', s.error);
-      scheduleReconnect(key, connectUbuntu);
+      log('ubuntu', 'ERROR', s.error);
+      scheduleReconnect('ubuntu', connectUbuntu, 20000);
       return;
     }
 
-    const conn = new Client();
-    s.conn = conn;
+    log('ubuntu', 'INFO', 'Tunnel open — authenticating to Ubuntu VM...');
+    const ubuntuConn = new Client();
+    s.conn = ubuntuConn;
 
-    conn.on('ready', () => {
-      log(key, 'INFO', 'Ubuntu SSH handshake OK — opening shell...');
-      conn.shell({ term: 'xterm' }, (err2, sh) => {
+    ubuntuConn.on('ready', () => {
+      log('ubuntu', 'INFO', 'Ubuntu SSH ready — opening shell...');
+      ubuntuConn.shell({ term: 'xterm' }, (err2, sh) => {
         if (err2) {
-          s.status = 'error';
-          s.error = err2.message;
+          s.status = 'error'; s.error = err2.message;
           broadcastState();
-          log(key, 'ERROR', `Ubuntu shell failed: ${err2.message}`);
-          scheduleReconnect(key, connectUbuntu);
+          log('ubuntu', 'ERROR', `Ubuntu shell failed: ${err2.message}`);
+          scheduleReconnect('ubuntu', connectUbuntu, 20000);
           return;
         }
 
@@ -249,42 +253,39 @@ function connectUbuntu() {
         s.lastSeen = new Date().toISOString();
         s.reconnects++;
         broadcastState();
-        log(key, 'INFO', 'Ubuntu shell open — connection established ✓');
+        log('ubuntu', 'INFO', '✅ Ubuntu VM connected and shell open');
 
         sh.on('data', (data) => {
-          const txt = data.toString().trim();
-          if (txt) {
+          const txt = data.toString();
+          if (txt.trim()) {
             s.lastOutput = txt.slice(-500);
             s.lastSeen = new Date().toISOString();
-            broadcast({ type: 'output', source: key, data: txt });
+            if (!txt.includes('__keepalive_')) {
+              broadcast({ type: 'output', source: 'ubuntu', data: txt });
+            }
           }
         });
 
-        sh.stderr.on('data', (data) => {
-          log(key, 'WARN', `ubuntu stderr: ${data.toString().trim()}`);
-        });
+        sh.stderr.on('data', (d) => log('ubuntu', 'WARN', `stderr: ${d.toString().trim()}`));
 
         sh.on('close', () => {
-          s.status = 'disconnected';
-          s.shell = null;
+          s.status = 'disconnected'; s.shell = null; s.conn = null;
           broadcastState();
-          log(key, 'WARN', 'Ubuntu shell closed — scheduling reconnect...');
-          scheduleReconnect(key, connectUbuntu);
+          log('ubuntu', 'WARN', 'Ubuntu shell closed — reconnecting...');
+          scheduleReconnect('ubuntu', connectUbuntu, 15000);
         });
       });
     });
 
-    conn.on('error', (err3) => {
-      s.status = 'error';
-      s.error = err3.message;
-      s.shell = null;
+    ubuntuConn.on('error', (err3) => {
+      s.status = 'error'; s.error = err3.message; s.shell = null;
       broadcastState();
-      log(key, 'ERROR', `Ubuntu connection error: ${err3.message}`);
-      scheduleReconnect(key, connectUbuntu);
+      log('ubuntu', 'ERROR', `Ubuntu error: ${err3.message}`);
+      scheduleReconnect('ubuntu', connectUbuntu, 20000);
     });
 
-    conn.connect({
-      sock: stream,
+    ubuntuConn.connect({
+      sock: stream,           // The tunnel stream — key difference vs naive approach
       username: 'ubuntu',
       password: UBUNTU_PASS,
       keepaliveInterval: 20000,
@@ -294,27 +295,30 @@ function connectUbuntu() {
   });
 }
 
-// ─── Reconnect scheduler ─────────────────────────────────
-const reconnectTimers = {};
-function scheduleReconnect(key, fn) {
-  if (reconnectTimers[key]) clearTimeout(reconnectTimers[key]);
-  const delay = 15000;
-  log(key, 'INFO', `Reconnecting in ${delay / 1000}s...`);
-  reconnectTimers[key] = setTimeout(fn, delay);
-}
-
-// ─── Keepalive cron (every 30s) ──────────────────────────
+// ─── Cron: keepalive every 30s ────────────────────────────
 cron.schedule('*/30 * * * * *', () => {
   sendKeepAlive('replit');
   sendKeepAlive('ubuntu');
 });
 
-// ─── Web: serve dashboard ────────────────────────────────
+// ─── Cron: health check every 60s ────────────────────────
+cron.schedule('*/60 * * * * *', () => {
+  if (state.replit.status !== 'connected') {
+    log('system', 'WARN', 'Replit not connected — forcing reconnect...');
+    connectReplit();
+  } else if (state.ubuntu.status !== 'connected' && state.ubuntu.status !== 'connecting') {
+    log('system', 'WARN', 'Ubuntu not connected — forcing reconnect...');
+    connectUbuntu();
+  }
+});
+
+// ─── REST API ─────────────────────────────────────────────
 app.use(express.static(path.join(__dirname, 'public')));
 app.use(express.json());
 
 app.get('/api/status', (req, res) => {
   res.json({
+    uptime: Math.floor((Date.now() - state.startTime) / 1000),
     replit: sanitize(state.replit),
     ubuntu: sanitize(state.ubuntu),
     logs: state.logs.slice(0, 100),
@@ -325,7 +329,7 @@ app.post('/api/command', (req, res) => {
   const { target, cmd } = req.body;
   const s = state[target];
   if (!s || !s.shell || s.status !== 'connected') {
-    return res.status(400).json({ error: 'Target not connected' });
+    return res.status(400).json({ error: `${target} is not connected` });
   }
   try {
     s.shell.write(cmd + '\n');
@@ -336,11 +340,16 @@ app.post('/api/command', (req, res) => {
   }
 });
 
-app.get('/health', (req, res) => {
-  res.json({ status: 'ok', uptime: process.uptime() });
+app.get('/health', (_req, res) => {
+  res.json({
+    ok: true,
+    uptime: Math.floor((Date.now() - state.startTime) / 1000),
+    replit: state.replit.status,
+    ubuntu: state.ubuntu.status,
+  });
 });
 
-// ─── WebSocket ───────────────────────────────────────────
+// ─── WebSocket ────────────────────────────────────────────
 wss.on('connection', (ws) => {
   ws.send(JSON.stringify({
     type: 'init',
@@ -363,12 +372,9 @@ wss.on('connection', (ws) => {
   });
 });
 
-// ─── Start ───────────────────────────────────────────────
+// ─── Start ────────────────────────────────────────────────
 server.listen(PORT, () => {
-  log('system', 'INFO', `Server listening on port ${PORT}`);
-  log('system', 'INFO', `Dashboard: http://localhost:${PORT}`);
-  setTimeout(() => {
-    connectReplit();
-    setTimeout(() => connectUbuntu(), 8000);
-  }, 2000);
+  log('system', 'INFO', `Server started on port ${PORT}`);
+  log('system', 'INFO', `Replit host: ${REPLIT_HOST || '(not set)'}`);
+  setTimeout(connectReplit, 2000);
 });
