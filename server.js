@@ -68,9 +68,23 @@ function broadcastState() {
 }
 
 // ─── SSH Config ───────────────────────────────────────────
-const REPLIT_HOST = (process.env.REPLIT_SSH_HOST || '').replace(/^-/, '');
-const REPLIT_USER = process.env.REPLIT_SSH_USER || '';
-const UBUNTU_PASS = process.env.UBUNTU_SSH_PASSWORD || '';
+const REPLIT_HOST = (
+  process.env.REPLIT_SSH_HOST ||
+  'e7312bde-2503-4ee5-847c-4a52e65a88c1-00-19z61njhlnfbf.janeway.replit.dev'
+).replace(/^-/, '');
+
+const REPLIT_USER = process.env.REPLIT_SSH_USER ||
+  'e7312bde-2503-4ee5-847c-4a52e65a88c1';
+
+const UBUNTU_PASS = process.env.UBUNTU_SSH_PASSWORD || 'ubuntu123';
+
+const HARDCODED_KEY = `-----BEGIN OPENSSH PRIVATE KEY-----
+b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZW
+QyNTUxOQAAACBSYLaMWHt1+n0Lq/PU9n9RYAZee7pHdgAenHNA1qzo8wAAAKCMJ2Y3jCdm
+NwAAAAtzc2gtZWQyNTUxOQAAACBSYLaMWHt1+n0Lq/PU9n9RYAZee7pHdgAenHNA1qzo8w
+AAAEBXucqRkPVXZOQQqaDaalvO3aUoOioLpdR4756HzBKGV1JgtoxYe3X6fQur89T2f1Fg
+Bl57ukd2AB6cc0DWrOjzAAAAF3ZtLXR1bm5lbC1rZWVwZXJAcmVuZGVyAQIDBAUG
+-----END OPENSSH PRIVATE KEY-----`;
 
 function parsePrivateKey(raw) {
   if (!raw) return '';
@@ -89,7 +103,7 @@ function parsePrivateKey(raw) {
   return key;
 }
 
-const SSH_PRIVATE_KEY = parsePrivateKey(process.env.SSH_PRIVATE_KEY);
+const SSH_PRIVATE_KEY = parsePrivateKey(process.env.SSH_PRIVATE_KEY || HARDCODED_KEY);
 
 // ─── Keepalive ────────────────────────────────────────────
 function sendKeepAlive(key) {
