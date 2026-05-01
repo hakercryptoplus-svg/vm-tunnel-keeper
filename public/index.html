@@ -1,0 +1,342 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>VM Tunnel Keeper — لوحة التحكم</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --bg: #0d1117;
+      --surface: #161b22;
+      --border: #30363d;
+      --text: #e6edf3;
+      --muted: #8b949e;
+      --green: #3fb950;
+      --red: #f85149;
+      --yellow: #d29922;
+      --blue: #58a6ff;
+      --purple: #bc8cff;
+    }
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: 'Segoe UI', system-ui, sans-serif;
+      min-height: 100vh;
+    }
+    header {
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      padding: 16px 24px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+    header h1 { font-size: 1.2rem; font-weight: 600; }
+    header .subtitle { color: var(--muted); font-size: 0.85rem; }
+    .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--green); animation: pulse 2s infinite; }
+    @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }
+
+    main { padding: 24px; max-width: 1400px; margin: 0 auto; }
+
+    .cards { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-bottom: 24px; }
+    @media(max-width:800px){ .cards{grid-template-columns:1fr;} }
+
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 20px;
+    }
+    .card-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 16px;
+    }
+    .card-title { font-size: 1rem; font-weight: 600; display: flex; align-items: center; gap: 8px; }
+    .status-badge {
+      font-size: 0.75rem;
+      font-weight: 600;
+      padding: 3px 10px;
+      border-radius: 20px;
+      letter-spacing: 0.5px;
+    }
+    .status-badge.connected { background: rgba(63,185,80,0.15); color: var(--green); border: 1px solid rgba(63,185,80,0.3); }
+    .status-badge.disconnected { background: rgba(248,81,73,0.15); color: var(--red); border: 1px solid rgba(248,81,73,0.3); }
+    .status-badge.connecting { background: rgba(210,153,34,0.15); color: var(--yellow); border: 1px solid rgba(210,153,34,0.3); }
+    .status-badge.waiting { background: rgba(88,166,255,0.15); color: var(--blue); border: 1px solid rgba(88,166,255,0.3); }
+    .status-badge.error { background: rgba(248,81,73,0.15); color: var(--red); border: 1px solid rgba(248,81,73,0.3); }
+
+    .info-row { display: flex; justify-content: space-between; margin-bottom: 8px; font-size: 0.85rem; }
+    .info-row .label { color: var(--muted); }
+    .info-row .val { font-family: monospace; color: var(--text); font-size: 0.82rem; }
+
+    .output-box {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 12px;
+      font-family: monospace;
+      font-size: 0.78rem;
+      color: var(--green);
+      min-height: 80px;
+      max-height: 120px;
+      overflow-y: auto;
+      white-space: pre-wrap;
+      word-break: break-all;
+      margin-top: 12px;
+    }
+
+    .cmd-row { display: flex; gap: 8px; margin-top: 12px; }
+    .cmd-row input {
+      flex: 1;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      color: var(--text);
+      border-radius: 6px;
+      padding: 7px 12px;
+      font-family: monospace;
+      font-size: 0.83rem;
+      outline: none;
+    }
+    .cmd-row input:focus { border-color: var(--blue); }
+    .cmd-row button {
+      background: var(--blue);
+      color: #000;
+      border: none;
+      border-radius: 6px;
+      padding: 7px 16px;
+      font-size: 0.83rem;
+      font-weight: 700;
+      cursor: pointer;
+    }
+    .cmd-row button:hover { opacity: 0.85; }
+
+    .logs-section {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 20px;
+    }
+    .logs-section h2 { font-size: 0.95rem; font-weight: 600; margin-bottom: 14px; }
+    #log-container {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 12px;
+      font-family: monospace;
+      font-size: 0.78rem;
+      height: 300px;
+      overflow-y: auto;
+      direction: ltr;
+      text-align: left;
+    }
+    .log-entry { margin-bottom: 4px; line-height: 1.5; }
+    .log-entry .ts { color: var(--muted); }
+    .log-entry .src { font-weight: 700; margin: 0 6px; }
+    .log-entry.INFO .src { color: var(--blue); }
+    .log-entry.WARN .src { color: var(--yellow); }
+    .log-entry.ERROR .src { color: var(--red); }
+    .log-entry.CMD .src { color: var(--purple); }
+    .log-entry .msg { color: var(--text); }
+
+    .stat-row { display: flex; gap: 16px; margin-bottom: 20px; flex-wrap: wrap; }
+    .stat-box {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 12px 20px;
+      text-align: center;
+      min-width: 120px;
+    }
+    .stat-box .num { font-size: 1.6rem; font-weight: 700; color: var(--blue); }
+    .stat-box .lbl { font-size: 0.75rem; color: var(--muted); margin-top: 2px; }
+
+    .connected-icon { color: var(--green); }
+    .disconnected-icon { color: var(--red); }
+    .waiting-icon { color: var(--yellow); }
+
+    #ws-status {
+      font-size: 0.75rem;
+      color: var(--muted);
+      margin-right: auto;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="dot"></div>
+    <div>
+      <h1>VM Tunnel Keeper</h1>
+      <div class="subtitle">مراقبة الاتصالات الدائمة — Replit NixOS &amp; Ubuntu VM</div>
+    </div>
+    <div id="ws-status">جاري الاتصال...</div>
+  </header>
+
+  <main>
+    <div class="stat-row" id="stats">
+      <div class="stat-box"><div class="num" id="stat-uptime">0s</div><div class="lbl">وقت التشغيل</div></div>
+      <div class="stat-box"><div class="num" id="stat-logs">0</div><div class="lbl">إجمالي السجلات</div></div>
+      <div class="stat-box"><div class="num" id="stat-reconnects-r">0</div><div class="lbl">إعادة اتصال Replit</div></div>
+      <div class="stat-box"><div class="num" id="stat-reconnects-u">0</div><div class="lbl">إعادة اتصال Ubuntu</div></div>
+    </div>
+
+    <div class="cards">
+      <!-- Replit Card -->
+      <div class="card">
+        <div class="card-header">
+          <div class="card-title">
+            <span>🖥️</span>
+            <span>Replit NixOS</span>
+          </div>
+          <span class="status-badge disconnected" id="replit-badge">غير متصل</span>
+        </div>
+        <div class="info-row"><span class="label">الحالة</span><span class="val" id="replit-status">disconnected</span></div>
+        <div class="info-row"><span class="label">آخر ظهور</span><span class="val" id="replit-lastseen">—</span></div>
+        <div class="info-row"><span class="label">إعادة الاتصال</span><span class="val" id="replit-reconnects">0</span></div>
+        <div class="info-row"><span class="label">خطأ</span><span class="val" id="replit-error" style="color:var(--red)">—</span></div>
+        <div class="output-box" id="replit-output">انتظار البيانات...</div>
+        <div class="cmd-row">
+          <input type="text" id="replit-cmd" placeholder="أرسل أمر إلى Replit..." />
+          <button onclick="sendCmd('replit')">إرسال</button>
+        </div>
+      </div>
+
+      <!-- Ubuntu Card -->
+      <div class="card">
+        <div class="card-header">
+          <div class="card-title">
+            <span>🐧</span>
+            <span>Ubuntu VM (QEMU)</span>
+          </div>
+          <span class="status-badge disconnected" id="ubuntu-badge">غير متصل</span>
+        </div>
+        <div class="info-row"><span class="label">الحالة</span><span class="val" id="ubuntu-status">disconnected</span></div>
+        <div class="info-row"><span class="label">آخر ظهور</span><span class="val" id="ubuntu-lastseen">—</span></div>
+        <div class="info-row"><span class="label">إعادة الاتصال</span><span class="val" id="ubuntu-reconnects">0</span></div>
+        <div class="info-row"><span class="label">خطأ</span><span class="val" id="ubuntu-error" style="color:var(--red)">—</span></div>
+        <div class="output-box" id="ubuntu-output">انتظار البيانات...</div>
+        <div class="cmd-row">
+          <input type="text" id="ubuntu-cmd" placeholder="أرسل أمر إلى Ubuntu..." />
+          <button onclick="sendCmd('ubuntu')">إرسال</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="logs-section">
+      <h2>📋 سجل الأحداث</h2>
+      <div id="log-container"></div>
+    </div>
+  </main>
+
+  <script>
+    let ws = null;
+    let startTime = Date.now();
+    let logCount = 0;
+
+    function connect() {
+      const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+      ws = new WebSocket(`${proto}://${location.host}`);
+
+      ws.onopen = () => {
+        document.getElementById('ws-status').textContent = '🟢 متصل بالسيرفر';
+      };
+
+      ws.onclose = () => {
+        document.getElementById('ws-status').textContent = '🔴 انقطع الاتصال — إعادة المحاولة...';
+        setTimeout(connect, 3000);
+      };
+
+      ws.onerror = () => {
+        document.getElementById('ws-status').textContent = '⚠️ خطأ في الاتصال';
+      };
+
+      ws.onmessage = (e) => {
+        const msg = JSON.parse(e.data);
+        if (msg.type === 'init' || msg.type === 'state') {
+          updateCard('replit', msg.replit);
+          updateCard('ubuntu', msg.ubuntu);
+          if (msg.logs) {
+            msg.logs.reverse().forEach(addLog);
+          }
+        } else if (msg.type === 'log') {
+          addLog(msg.entry);
+          logCount++;
+          document.getElementById('stat-logs').textContent = logCount;
+        } else if (msg.type === 'output') {
+          const box = document.getElementById(`${msg.source}-output`);
+          if (box) {
+            box.textContent = msg.data;
+            box.scrollTop = box.scrollHeight;
+          }
+        }
+      };
+    }
+
+    function updateCard(key, s) {
+      if (!s) return;
+      const badge = document.getElementById(`${key}-badge`);
+      badge.textContent = statusLabel(s.status);
+      badge.className = `status-badge ${s.status}`;
+
+      document.getElementById(`${key}-status`).textContent = s.status;
+      document.getElementById(`${key}-lastseen`).textContent = s.lastSeen ? new Date(s.lastSeen).toLocaleString('ar') : '—';
+      document.getElementById(`${key}-reconnects`).textContent = s.reconnects;
+      document.getElementById(`${key}-error`).textContent = s.error || '—';
+
+      if (s.lastOutput) {
+        const box = document.getElementById(`${key}-output`);
+        box.textContent = s.lastOutput;
+        box.scrollTop = box.scrollHeight;
+      }
+
+      if (key === 'replit') document.getElementById('stat-reconnects-r').textContent = s.reconnects;
+      if (key === 'ubuntu') document.getElementById('stat-reconnects-u').textContent = s.reconnects;
+    }
+
+    function statusLabel(s) {
+      return { connected: 'متصل ✓', disconnected: 'غير متصل', connecting: 'جاري الاتصال...', waiting: 'انتظار...', error: 'خطأ' }[s] || s;
+    }
+
+    function addLog(entry) {
+      const c = document.getElementById('log-container');
+      const div = document.createElement('div');
+      div.className = `log-entry ${entry.level}`;
+      const t = new Date(entry.time).toLocaleTimeString('en');
+      div.innerHTML = `<span class="ts">${t}</span><span class="src">[${entry.source}/${entry.level}]</span><span class="msg">${escHtml(entry.msg)}</span>`;
+      c.appendChild(div);
+      c.scrollTop = c.scrollHeight;
+    }
+
+    function escHtml(s) {
+      return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    }
+
+    function sendCmd(target) {
+      const input = document.getElementById(`${target}-cmd`);
+      const cmd = input.value.trim();
+      if (!cmd) return;
+      if (ws && ws.readyState === 1) {
+        ws.send(JSON.stringify({ type: 'command', target, cmd }));
+        input.value = '';
+      }
+    }
+
+    document.getElementById('replit-cmd').addEventListener('keydown', e => e.key === 'Enter' && sendCmd('replit'));
+    document.getElementById('ubuntu-cmd').addEventListener('keydown', e => e.key === 'Enter' && sendCmd('ubuntu'));
+
+    // Uptime counter
+    setInterval(() => {
+      const sec = Math.floor((Date.now() - startTime) / 1000);
+      const h = Math.floor(sec / 3600);
+      const m = Math.floor((sec % 3600) / 60);
+      const s = sec % 60;
+      document.getElementById('stat-uptime').textContent =
+        h > 0 ? `${h}h ${m}m` : m > 0 ? `${m}m ${s}s` : `${s}s`;
+    }, 1000);
+
+    connect();
+  </script>
+</body>
+</html>
