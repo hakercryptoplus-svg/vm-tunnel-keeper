@@ -1,0 +1,16 @@
+services:
+  - type: web
+    name: vm-tunnel-keeper
+    env: node
+    plan: free
+    buildCommand: npm install
+    startCommand: node server.js
+    envVars:
+      - key: REPLIT_SSH_HOST
+        sync: false
+      - key: REPLIT_SSH_USER
+        sync: false
+      - key: SSH_PRIVATE_KEY
+        sync: false
+      - key: UBUNTU_SSH_PASSWORD
+        sync: false
